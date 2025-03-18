@@ -4,6 +4,7 @@ Reference: https://github.com/cvg/Hierarchical-Localization/blob/master/hloc/pai
 https://openaccess.thecvf.com/content_cvpr_2016/papers/Arandjelovic_NetVLAD_CNN_Architecture_CVPR_2016_paper.pdf
 Authors: John Lambert
 """
+
 import math
 import os
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ import torch
 
 import gtsfm.utils.logger as logger_utils
 from gtsfm.retriever.retriever_base import RetrieverBase, ImageMatchingRegime
+from gtsfm.metis.graph_partition import *
+
 
 logger = logger_utils.get_logger()
 MAX_NUM_IMAGES = 10000
@@ -31,7 +34,9 @@ class SubBlockSimilarityResult:
 
 
 class NetVLADRetriever(RetrieverBase):
-    def __init__(self, num_matched: int, min_score: float = 0.1, blocksize: int = 50) -> None:
+    def __init__(
+        self, num_matched: int, min_score: float = 0.1, blocksize: int = 50
+    ) -> None:
         """
         Args:
             num_matched: Number of K potential matches to provide per query. These are the top "K" matches per query.
@@ -74,7 +79,9 @@ class NetVLADRetriever(RetrieverBase):
             sim=sim, image_fnames=image_fnames, plots_output_dir=plots_output_dir
         )
 
-    def compute_similarity_matrix(self, global_descriptors: List[np.ndarray]) -> torch.tensor:
+    def compute_similarity_matrix(
+        self, global_descriptors: List[np.ndarray]
+    ) -> torch.tensor:
         """Compute a similarity matrix between all pairs of images.
         We use block matching, to avoid excessive memory usage.
         We cannot fit more than 50x50 sized block into memory, on a 16 GB RAM machine.
@@ -99,14 +106,20 @@ class NetVLADRetriever(RetrieverBase):
             for block_j in range(block_i, num_blocks):
                 subblock_results.append(
                     self._compute_similarity_subblock(
-                        global_descriptors=global_descriptors, block_i=block_i, block_j=block_j
+                        global_descriptors=global_descriptors,
+                        block_i=block_i,
+                        block_j=block_j,
                     )
                 )
 
-        sim = self._aggregate_subblocks(subblock_results=subblock_results, num_images=num_images)
+        sim = self._aggregate_subblocks(
+            subblock_results=subblock_results, num_images=num_images
+        )
         return sim
 
-    def _compute_similarity_subblock(self, global_descriptors: List[np.ndarray], block_i: int, block_j: int):
+    def _compute_similarity_subblock(
+        self, global_descriptors: List[np.ndarray], block_i: int, block_j: int
+    ):
         """Compute a sub-block of an global descriptor based similarity matrix.
         Args:
             global_descriptors: global descriptors, one per image.
@@ -119,7 +132,13 @@ class NetVLADRetriever(RetrieverBase):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         num_blocks = math.ceil(num_images / self._blocksize)
         # only compute the upper triangular portion of the similarity matrix.
-        logger.info("Computing matching block (%d/%d,%d/%d)", block_i, num_blocks - 1, block_j, num_blocks - 1)
+        logger.info(
+            "Computing matching block (%d/%d,%d/%d)",
+            block_i,
+            num_blocks - 1,
+            block_j,
+            num_blocks - 1,
+        )
         i_start = block_i * self._blocksize
         i_end = (block_i + 1) * self._blocksize
         i_end = min(i_end, num_images)
@@ -127,13 +146,27 @@ class NetVLADRetriever(RetrieverBase):
         j_end = (block_j + 1) * self._blocksize
         j_end = min(j_end, num_images)
         # Form (K,D) for K images.
-        block_i_query_descs = torch.from_numpy(np.array(global_descriptors[i_start:i_end]))
-        block_j_query_descs = torch.from_numpy(np.array(global_descriptors[j_start:j_end]))
+        block_i_query_descs = torch.from_numpy(
+            np.array(global_descriptors[i_start:i_end])
+        )
+        block_j_query_descs = torch.from_numpy(
+            np.array(global_descriptors[j_start:j_end])
+        )
         # Einsum equivalent to (img_descs @ img_descs.T)
-        sim_block = torch.einsum("id,jd->ij", block_i_query_descs.to(device), block_j_query_descs.to(device))
-        return SubBlockSimilarityResult(i_start=i_start, i_end=i_end, j_start=j_start, j_end=j_end, subblock=sim_block)
+        sim_block = torch.einsum(
+            "id,jd->ij", block_i_query_descs.to(device), block_j_query_descs.to(device)
+        )
+        return SubBlockSimilarityResult(
+            i_start=i_start,
+            i_end=i_end,
+            j_start=j_start,
+            j_end=j_end,
+            subblock=sim_block,
+        )
 
-    def _aggregate_subblocks(self, subblock_results: List[SubBlockSimilarityResult], num_images: int) -> torch.Tensor:
+    def _aggregate_subblocks(
+        self, subblock_results: List[SubBlockSimilarityResult], num_images: int
+    ) -> torch.Tensor:
         """Aggregate results from many independently computed sub-blocks of the similarity matrix into a single matrix.
 
         Args:
@@ -149,7 +182,10 @@ class NetVLADRetriever(RetrieverBase):
         return sim
 
     def compute_pairs_from_similarity_matrix(
-        self, sim: torch.Tensor, image_fnames: List[str], plots_output_dir: Optional[Path] = None
+        self,
+        sim: torch.Tensor,
+        image_fnames: List[str],
+        plots_output_dir: Optional[Path] = None,
     ) -> List[Tuple[int, int]]:
         """
 
@@ -166,7 +202,10 @@ class NetVLADRetriever(RetrieverBase):
         is_invalid_mat = ~np.triu(np.ones((num_images, num_images), dtype=bool))
         np.fill_diagonal(a=is_invalid_mat, val=True)
         pairs = pairs_from_score_matrix(
-            sim, invalid=is_invalid_mat, num_select=self._num_matched, min_score=self._min_score
+            sim,
+            invalid=is_invalid_mat,
+            num_select=self._num_matched,
+            min_score=self._min_score,
         )
         named_pairs = [(image_fnames[i], image_fnames[j]) for i, j in pairs]
         if plots_output_dir:
@@ -174,7 +213,9 @@ class NetVLADRetriever(RetrieverBase):
             # Save image of similarity matrix.
             plt.imshow(np.triu(sim.detach().cpu().numpy()))
             plt.title("Image Similarity Matrix")
-            plt.savefig(str(plots_output_dir / "netvlad_similarity_matrix.jpg"), dpi=500)
+            plt.savefig(
+                str(plots_output_dir / "netvlad_similarity_matrix.jpg"), dpi=500
+            )
             plt.close("all")
             # Save values in similarity matrix.
             np.savetxt(
@@ -187,19 +228,26 @@ class NetVLADRetriever(RetrieverBase):
             # Save named pairs and scores.
             with open(plots_output_dir / "netvlad_named_pairs.txt", "w") as fid:
                 for _named_pair, _pair_ind in zip(named_pairs, pairs):
-                    fid.write("%.4f %s %s\n" % (sim[_pair_ind[0], _pair_ind[1]], _named_pair[0], _named_pair[1]))
+                    fid.write(
+                        "%.4f %s %s\n"
+                        % (
+                            sim[_pair_ind[0], _pair_ind[1]],
+                            _named_pair[0],
+                            _named_pair[1],
+                        )
+                    )
 
         logger.info("Found %d pairs from the NetVLAD Retriever.", len(pairs))
         return pairs
 
 
 def pairs_from_score_matrix(
-    scores: torch.Tensor, invalid: np.array, num_select: int, min_score: Optional[float] = None
+    scores: torch.Tensor,
+    invalid: np.array,
+    num_select: int,
+    min_score: Optional[float] = None,
 ) -> List[Tuple[int, int]]:
-    """Identify image pairs from a score matrix.
-
-    Note: Similarity computation here is based off of Paul-Edouard Sarlin's HLOC:
-    Reference: https://github.com/cvg/Hierarchical-Localization/blob/master/hloc/pairs_from_retrieval.py
+    """Identify image pairs from a score matrix using hierarchical partitioning.
 
     Args:
         scores: (K1,K2) for matching K1 images against K2 images.
@@ -208,21 +256,27 @@ def pairs_from_score_matrix(
         min_score: Minimum allowed similarity score.
 
     Returns:
-        pairs: Tuples representing pairs (i1,i2) of images.
+        List[Tuple[int, int]]: The first partition edges from the partitioned graph.
     """
     N = scores.shape[0]
-    # if there are only N images to choose from, selecting more than N is not allowed
     num_select = min(num_select, N)
     assert scores.shape == invalid.shape
+
     invalid = torch.from_numpy(invalid).to(scores.device)
     if min_score is not None:
-        # logical OR.
         invalid |= scores < min_score
     scores.masked_fill_(invalid, float("-inf"))
-    topk = torch.topk(scores, k=num_select, dim=1)
-    indices = topk.indices.cpu().numpy()
-    valid = topk.values.isfinite().cpu().numpy()
-    pairs = []
-    for i, j in zip(*np.where(valid)):
-        pairs.append((i, indices[i, j]))
-    return pairs
+
+    # Build binary partition tree
+    similarity_matrix = scores.clone()
+    similarity_matrix[similarity_matrix == float("-inf")] = (
+        0  # Replace -inf with 0 for tree building
+    )
+    binary_tree = BinaryPartitionTree(similarity_matrix, max_levels=3)
+
+    # Get the first partition from the leaf partitions
+    leaf_partitions = binary_tree.get_leaf_partitions()
+    if leaf_partitions:
+        return leaf_partitions[0]  # Return the first partition
+
+    return []
