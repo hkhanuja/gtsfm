@@ -1,6 +1,5 @@
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
-import graphviz
 import gtsam
 import networkx as nx
 from gtsam import SymbolicFactorGraph
@@ -12,9 +11,8 @@ logger = logger_utils.get_logger()
 
 
 class BinaryTreeNode:
-    def __init__(self, frontals: List[int], separators: List[int], depth: int):
-        self.frontals = frontals
-        self.separators = separators
+    def __init__(self, keys: List[int], depth: int):
+        self.keys = keys  # Only at leaves
         self.left = None
         self.right = None
         self.depth = depth
@@ -24,37 +22,47 @@ class BinaryTreeNode:
 
 
 class BinaryTreePartition(GraphPartitionerBase):
-    """Graph partitioner that partitions image pairs using a binary tree built from METIS ordering."""
-
     def __init__(self, max_depth: int = 2):
-        """Initialize the partitioner."""
         super().__init__(process_name="BinaryTreePartition")
         self.max_depth = max_depth
 
     def partition_image_pairs(self, image_pairs: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
-        """Partition image pairs into leaf nodes of a binary tree."""
         if not image_pairs:
             logger.warning("No image pairs provided for partitioning.")
             return []
 
-        # Build graphs
-        symbol_graph, symbols, nx_graph = self._build_graphs(image_pairs)
-
-        # Run METIS ordering
+        symbol_graph, _, nx_graph = self._build_graphs(image_pairs)
         ordering = gtsam.Ordering.MetisSymbolicFactorGraph(symbol_graph)
+        self.root = self._build_binary_partition(ordering)
 
-        # Build binary tree
-        root = self._build_binary_partition(ordering, nx_graph)
+        num_leaves = 2**self.max_depth
+        partition_details = [{} for _ in range(num_leaves)]
+        image_pair_partitions = [[] for _ in range(num_leaves)]
 
-        # Collect partitions from leaf nodes
-        partitions = [[] for _ in range(pow(2, self.max_depth))]
-        self._collect_leaf_partitions(root, nx_graph, partitions, leaf_idx=[0])
+        self._collect_leaf_partitions(self.root, nx_graph, partition_details, leaf_idx=[0])
 
-        logger.info(f"BinaryTreePartition: partitioned into {len(partitions)} leaf nodes.")
-        return partitions
+        logger.info(f"BinaryTreePartition: partitioned into {len(partition_details)} leaf nodes.")
+
+        for i in range(num_leaves):
+            edges_explicit = partition_details[i].get("edges_within_explicit", [])
+            edges_shared = partition_details[i].get("edges_with_shared", [])
+            image_pair_partitions[i] = edges_explicit + edges_shared
+
+        for i, part in enumerate(partition_details):
+            explicit_keys = part.get("explicit_keys", [])
+            edges_within = part.get("edges_within_explicit", [])
+            edges_shared = part.get("edges_with_shared", [])
+
+            logger.info(
+                f"Partition {i}:\n"
+                f"  Explicit Keys ({len(explicit_keys)}): {sorted(explicit_keys)}\n"
+                f"  Internal Edges ({len(edges_within)}): {edges_within}\n"
+                f"  Shared Edges   ({len(edges_shared)})"
+            )
+
+        return image_pair_partitions
 
     def _build_graphs(self, image_pairs: List[Tuple[int, int]]) -> Tuple[SymbolicFactorGraph, List[int], nx.Graph]:
-        """Create a SymbolicFactorGraph and NetworkX graph from image pairs."""
         sfg = gtsam.SymbolicFactorGraph()
         nxg = nx.Graph()
         keys = set()
@@ -70,84 +78,58 @@ class BinaryTreePartition(GraphPartitionerBase):
 
         return sfg, list(keys), nxg
 
-    def _build_binary_partition(self, ordering: gtsam.Ordering, nx_graph: nx.Graph) -> BinaryTreeNode:
-        """Recursively build a binary tree from METIS ordering."""
+    def _build_binary_partition(self, ordering: gtsam.Ordering) -> BinaryTreeNode:
         ordered_keys = [ordering.at(i) for i in range(ordering.size())]
 
-        def split(keys: List[int], depth: int, parent_separator: List[int]) -> BinaryTreeNode:
-            node = BinaryTreeNode(frontals=keys, separators=parent_separator, depth=depth)
-
-            if depth == self.max_depth or len(keys) <= 3:
-                return node
+        def split(keys: List[int], depth: int) -> BinaryTreeNode:
+            if depth == self.max_depth:
+                return BinaryTreeNode(keys, depth)
 
             mid = len(keys) // 2
-            left_keys = keys[:mid]
-            right_keys = keys[mid:]
-
-            if len(left_keys) < 3 or len(right_keys) < 3:
-                return node
-
-            separators = self._find_separators(nx_graph, left_keys, right_keys)
-
-            if len(separators) == 0:
-                return node
-
-            node.left = split(left_keys, depth + 1, separators)
-            node.right = split(right_keys, depth + 1, separators)
-
+            left_node = split(keys[:mid], depth + 1)
+            right_node = split(keys[mid:], depth + 1)
+            node = BinaryTreeNode([], depth)
+            node.left = left_node
+            node.right = right_node
             return node
 
-        return split(ordered_keys, depth=0, parent_separator=[])
-
-    def _find_separators(self, nx_graph: nx.Graph, group_a: List[int], group_b: List[int]) -> List[int]:
-        """Find separator variables connecting group_a and group_b."""
-        separators = set()
-        group_a_set = set(group_a)
-        group_b_set = set(group_b)
-
-        for u, v in nx_graph.edges():
-            if (u in group_a_set and v in group_b_set) or (v in group_a_set and u in group_b_set):
-                separators.add(u)
-                separators.add(v)
-
-        return list(separators)
+        return split(ordered_keys, 0)
 
     def _collect_leaf_partitions(
         self,
         node: BinaryTreeNode,
         nx_graph: nx.Graph,
-        partitions: List[List[Tuple[int, int]]],
+        partitions: List[Dict],
         leaf_idx: List[int],
     ):
-        """Collect leaf node partitions based on node's own separator."""
         if node.is_leaf():
-            print(f"Collecting for leaf {leaf_idx[0]}")
+            idx = leaf_idx[0]
+            leaf_idx[0] += 1
 
-            frontal_set = set(node.frontals)
-            separator_set = set(node.separators)
-            full_node_set = frontal_set | separator_set
-
-            print(f"  Frontals: {node.frontals}")
-            print(f"  Separators: {node.separators}")
-            print(f"  Full nodes: {full_node_set}")
-
-            subgraph_edges = []
+            explicit_keys = set(node.keys)
+            edges_within_explicit = []
+            edges_with_shared = []
 
             for u, v in nx_graph.edges():
-                if u in full_node_set and v in full_node_set:
-                    u_in_frontals = u in frontal_set
-                    v_in_frontals = v in frontal_set
+                if u in explicit_keys and v in explicit_keys:
+                    edges_within_explicit.append((gtsam.Symbol(u).index(), gtsam.Symbol(v).index()))
+                elif u in explicit_keys or v in explicit_keys:
+                    edges_with_shared.append((gtsam.Symbol(u).index(), gtsam.Symbol(v).index()))
 
-                    if u_in_frontals or v_in_frontals:
-                        u_idx = gtsam.Symbol(u).index()
-                        v_idx = gtsam.Symbol(v).index()
-                        subgraph_edges.append((min(u_idx, v_idx), max(u_idx, v_idx)))
-
-            partitions[leaf_idx[0]] = subgraph_edges
-            leaf_idx[0] += 1
+            partitions[idx] = {
+                "explicit_keys": [gtsam.Symbol(u).index() for u in explicit_keys],
+                "explicit_count": len(explicit_keys),
+                "edges_within_explicit": edges_within_explicit,
+                "edges_with_shared": edges_with_shared,
+            }
             return
 
-        if node.left:
-            self._collect_leaf_partitions(node.left, nx_graph, partitions, leaf_idx)
-        if node.right:
-            self._collect_leaf_partitions(node.right, nx_graph, partitions, leaf_idx)
+        # Recursively collect for children, compute shared variables
+        self._collect_leaf_partitions(node.left, nx_graph, partitions, leaf_idx)
+        self._collect_leaf_partitions(node.right, nx_graph, partitions, leaf_idx)
+
+        left_keys = set(node.left.keys) if node.left and node.left.keys else set()
+        right_keys = set(node.right.keys) if node.right and node.right.keys else set()
+        shared_vars = list(left_keys & right_keys)
+
+        logger.info(f"Shared vars at depth {node.depth}: {shared_vars}, count: {len(shared_vars)}")
