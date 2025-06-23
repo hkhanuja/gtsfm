@@ -127,9 +127,3 @@ class BinaryTreePartition(GraphPartitionerBase):
         # Recursively collect for children, compute shared variables
         self._collect_leaf_partitions(node.left, nx_graph, partitions, leaf_idx)
         self._collect_leaf_partitions(node.right, nx_graph, partitions, leaf_idx)
-
-        left_keys = set(node.left.keys) if node.left and node.left.keys else set()
-        right_keys = set(node.right.keys) if node.right and node.right.keys else set()
-        shared_vars = list(left_keys & right_keys)
-
-        logger.info(f"Shared vars at depth {node.depth}: {shared_vars}, count: {len(shared_vars)}")
