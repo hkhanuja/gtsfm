@@ -12,7 +12,9 @@ Author: Shicong Ma
 import unittest
 from typing import List, Tuple
 
-from gtsfm.graph_partitioner.binary_tree_partition import BinaryTreePartition
+import gtsam
+
+from gtsfm.graph_partitioner.binary_tree_partition import BinaryTreeNode, BinaryTreePartition
 
 
 class TestBinaryTreePartition(unittest.TestCase):
@@ -129,6 +131,74 @@ class TestBinaryTreePartition(unittest.TestCase):
         dfs(root)
         self.assertEqual(len(leaf_nodes), 2**partitioner.max_depth)
         self.assertTrue(all(n.depth == partitioner.max_depth for n in leaf_nodes))
+
+    def test_build_graphs(self):
+        """Test that _build_graphs constructs the correct symbolic and networkx graphs."""
+        partitioner = BinaryTreePartition()
+        test_pairs = [(0, 1), (1, 2)]
+        sfg, keys, nxg = partitioner._build_graphs(test_pairs)
+
+        # Check symbolic graph has correct number of factors
+        self.assertEqual(sfg.size(), len(test_pairs))
+
+        # Check nx graph has correct nodes and edges
+        self.assertEqual(
+            set(nxg.edges()),
+            {(gtsam.symbol("x", 0), gtsam.symbol("x", 1)), (gtsam.symbol("x", 1), gtsam.symbol("x", 2))},
+        )
+        self.assertEqual(len(nxg.nodes), 3)
+        self.assertEqual(len(keys), 3)
+
+    def test_build_binary_partition(self):
+        """Test that binary tree is built correctly with specified depth and balanced splitting."""
+        partitioner = BinaryTreePartition(max_depth=2)
+
+        # Fake ordering: integers 0 through 7
+        ordering = type("FakeOrdering", (), {"size": lambda self: 8, "at": lambda self, idx: idx})()
+
+        root = partitioner._build_binary_partition(ordering)
+
+        # Collect leaf nodes and check depth
+        leaf_nodes = []
+
+        def dfs(node):
+            if node.is_leaf():
+                leaf_nodes.append(node)
+            if node.left:
+                dfs(node.left)
+            if node.right:
+                dfs(node.right)
+
+        dfs(root)
+        self.assertEqual(len(leaf_nodes), 2**partitioner.max_depth)
+        self.assertTrue(all(n.depth == partitioner.max_depth for n in leaf_nodes))
+        self.assertEqual(sum(len(n.keys) for n in leaf_nodes), 8)
+
+    def test_compute_leaf_partition_details(self):
+        """Test that leaf partitions correctly report internal and shared edges."""
+        partitioner = BinaryTreePartition(max_depth=1)
+        image_pairs = [(0, 1), (1, 2), (2, 3)]  # Line graph
+
+        # Build graph and partition tree
+        _, _, nxg = partitioner._build_graphs(image_pairs)
+
+        # Manually create a binary tree with leaves split as [0,1] and [2,3]
+        left = BinaryTreeNode([gtsam.symbol("x", 0), gtsam.symbol("x", 1)], depth=1)
+        right = BinaryTreeNode([gtsam.symbol("x", 2), gtsam.symbol("x", 3)], depth=1)
+        root = BinaryTreeNode([], depth=0)
+        root.left = left
+        root.right = right
+
+        details = partitioner._compute_leaf_partition_details(root, nxg)
+        self.assertEqual(len(details), 2)
+
+        # Check that shared edge (1,2) is included in both
+        flattened_edges = set()
+        for d in details:
+            for u, v in d["edges_within_explicit"] + d["edges_with_shared"]:
+                flattened_edges.add((min(u, v), max(u, v)))
+        for u, v in image_pairs:
+            self.assertIn((min(u, v), max(u, v)), flattened_edges)
 
 
 if __name__ == "__main__":
