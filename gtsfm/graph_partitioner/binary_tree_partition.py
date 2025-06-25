@@ -73,7 +73,7 @@ class BinaryTreePartition(GraphPartitionerBase):
         num_leaves = 2**self.max_depth
         image_pairs_per_partition = [[] for _ in range(num_leaves)]
 
-        partition_details = self._collect_leaf_partitions(binary_tree_root_node, nx_graph)
+        partition_details = self._compute_leaf_partition_details(binary_tree_root_node, nx_graph)
 
         logger.info(f"BinaryTreePartition: partitioned into {len(partition_details)} leaf nodes.")
 
@@ -145,7 +145,7 @@ class BinaryTreePartition(GraphPartitionerBase):
 
         return split(ordered_keys, 0)
 
-    def _collect_leaf_partitions(
+    def _compute_leaf_partition_details(
         self,
         node: BinaryTreeNode,
         nx_graph: nx.Graph,
@@ -180,6 +180,6 @@ class BinaryTreePartition(GraphPartitionerBase):
             ]
 
         # Collect from both children
-        left_partitions = self._collect_leaf_partitions(node.left, nx_graph)
-        right_partitions = self._collect_leaf_partitions(node.right, nx_graph)
+        left_partitions = self._compute_leaf_partition_details(node.left, nx_graph)
+        right_partitions = self._compute_leaf_partition_details(node.right, nx_graph)
         return left_partitions + right_partitions
