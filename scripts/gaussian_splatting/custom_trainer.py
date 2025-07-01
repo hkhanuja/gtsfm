@@ -656,8 +656,6 @@ class Runner:
             print("No video rendering")
             return
         print("Rendering trajectory...")
-        if step == cfg.max_steps - 1:
-            step = step+1
         camtoworlds_all_np = None
         K_np = None
         
@@ -747,8 +745,8 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
         runner.splats.load_state_dict(state_dict)
         step = ckpt_data.get("step", 0)
 
-        runner.eval(step=step)
-        runner.render_traj(step=step)
+        runner.eval(step=step+1)
+        runner.render_traj(step=step+1)
     else:
         runner.train()
         runner.render_traj(cfg.max_steps)
