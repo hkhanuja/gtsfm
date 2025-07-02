@@ -594,10 +594,13 @@ class Runner:
         if step == cfg.max_steps-1:
             step = step+1
         self.training = False 
-        print(f"Running evaluation at step {step}...")
+        
         
         valloader = torch.utils.data.DataLoader(self.valset, batch_size=1, shuffle=False)
         metrics = defaultdict(list)
+        if len(valloader)==0:
+            return
+        print(f"Running evaluation at step {step}...")
         
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(self.device)
