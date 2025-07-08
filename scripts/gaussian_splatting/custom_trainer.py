@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import itertools
 
 import numpy as np
 import torch
@@ -169,17 +170,17 @@ class Config:
     packed: bool = False
 
     # --- Advanced Densification and Pruning Strategy Controls (from Splatfacto) ---
-    warmup_length: int = 500
+    warmup_length: int = 300
     refine_every: int = 100
-    cull_alpha_thresh: float = 0.1
-    cull_scale_thresh: float = 0.5
+    cull_alpha_thresh: float = 0.005
+    cull_scale_thresh: float = 0.2
     reset_alpha_every: int = 30
-    densify_grad_thresh: float = 0.0008
+    densify_grad_thresh: float = 0.0002
     densify_size_thresh: float = 0.01
     cull_screen_size: float = 0.15
     split_screen_size: float = 0.05
     stop_screen_size_at: int = 4000
-    stop_split_at: int = 15000
+    stop_split_at: int = 3000
     n_split_samples: int = 2
     use_absgrad: bool = True
 
@@ -492,16 +493,12 @@ class Runner:
             persistent_workers=True,
             pin_memory=True,
         )
-        trainloader_iter = iter(trainloader)
+        trainloader_iter = iter(itertools.cycle(trainloader)) 
 
         pbar = tqdm.tqdm(range(init_step, max_steps))
         for step in pbar:
-            try:
-                data = next(trainloader_iter)
-            except StopIteration:
-                trainloader_iter = iter(trainloader)
-                data = next(trainloader_iter)
-
+            data = next(trainloader_iter)
+            
             camtoworlds = data["camtoworld"].to(device)
             pixels_full_res = data["image"].to(device)
             Ks_full_res = data["K"].to(device)
@@ -520,6 +517,7 @@ class Runner:
             
             sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
+            # with autocast(enabled=True):
             renders, alphas, info = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
@@ -558,9 +556,12 @@ class Runner:
             loss.backward()
             pbar.set_description(f"loss={loss.item():.3f}| sh_deg={sh_degree_to_use}| res_factor={d}")
 
+            # Unscale gradients and step optimizers
             for optimizer in self.optimizers.values():
+                # scaler.step(optimizer)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+
             for scheduler in schedulers:
                 scheduler.step()
 
